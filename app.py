@@ -1,4 +1,5 @@
 import math
+import re
 import textwrap
 from io import BytesIO
 
@@ -97,8 +98,202 @@ def is_long_text_series(series, threshold=12):
     return avg_len >= threshold
 
 
+def normalize_column_name(col):
+    return str(col).strip().lower().replace(" ", "")
+
+
+def extract_age_number(value):
+    if pd.isna(value):
+        return np.nan
+
+    text = str(value).strip()
+    numbers = re.findall(r"\d+", text)
+    if numbers:
+        return int(numbers[0])
+    return np.nan
+
+
+def detect_population_columns(df, numeric_cols=None):
+    age_keywords = ["나이", "연령", "age", "ages"]
+    year_keywords = ["연도", "년도", "year"]
+    population_keywords = ["인구", "population", "count", "명", "인원", "total"]
+
+    age_col = None
+    year_col = None
+    population_col = None
+
+    for col in df.columns:
+        normalized = normalize_column_name(col)
+
+        if age_col is None and any(keyword in normalized for keyword in age_keywords):
+            age_col = col
+
+        if year_col is None and any(keyword in normalized for keyword in year_keywords):
+            year_col = col
+
+        if population_col is None and any(keyword in normalized for keyword in population_keywords):
+            population_col = col
+
+    if population_col is None and numeric_cols:
+        for col in numeric_cols:
+            if col != age_col and col != year_col:
+                population_col = col
+                break
+
+    return age_col, year_col, population_col
+
+
+def prepare_population_dataframe(df, age_col, year_col, population_col):
+    selected_cols = [age_col, population_col]
+    if year_col:
+        selected_cols.append(year_col)
+
+    pop_df = df[selected_cols].dropna().copy()
+    if pop_df.empty:
+        return pop_df
+
+    pop_df["age_number"] = pop_df[age_col].apply(extract_age_number)
+    pop_df = pop_df.dropna(subset=["age_number"])
+    if pop_df.empty:
+        return pop_df
+
+    pop_df["age_number"] = pop_df["age_number"].astype(int)
+    pop_df = pop_df[(pop_df["age_number"] >= 0) & (pop_df["age_number"] <= 999)]
+
+    pop_df[population_col] = pd.to_numeric(pop_df[population_col], errors="coerce")
+    pop_df = pop_df.dropna(subset=[population_col])
+
+    if year_col:
+        pop_df[year_col] = pop_df[year_col].astype(str)
+        pop_df = pop_df.sort_values([year_col, "age_number"])
+    else:
+        pop_df = pop_df.sort_values(["age_number"])
+
+    pop_df[age_col] = pop_df[age_col].astype(str)
+    return pop_df
+
+
+def render_population_visualizations(df, numeric_cols):
+    age_col, year_col, population_col = detect_population_columns(df, numeric_cols)
+
+    if not age_col or not population_col:
+        return
+
+    pop_df = prepare_population_dataframe(df, age_col, year_col, population_col)
+    if pop_df.empty:
+        return
+
+    st.header("👨‍👩‍👧 인구 데이터 분석")
+    st.write("인구 데이터로 보이는 표를 찾아서 나이순으로 정리하고, 연도별 비교도 해줘요.")
+
+    age_min = int(pop_df["age_number"].min())
+    age_max = int(pop_df["age_number"].max())
+    if age_min == 0 and age_max >= 99:
+        st.success("나이를 0세부터 99세 이상 순서처럼 읽기 쉬운 순서로 정렬했어요.")
+    else:
+        st.info(f"나이를 {age_min}세부터 {age_max}세까지 순서대로 정렬했어요.")
+
+    if year_col and year_col in pop_df.columns:
+        years = sorted(pop_df[year_col].dropna().unique().tolist())
+        selected_year = st.selectbox("보고 싶은 연도를 고르세요", years, key="population_year")
+
+        year_df = pop_df[pop_df[year_col] == selected_year].copy()
+        year_df = year_df.sort_values("age_number")
+
+        if not year_df.empty:
+            render_plotly(
+                px.bar(
+                    year_df,
+                    x="age_number",
+                    y=population_col,
+                    title=f"{selected_year}년 연령별 인구",
+                    labels={"age_number": "나이", population_col: "인구"},
+                ),
+                "연령별 인구 막대그래프",
+            )
+
+        compare_years = st.multiselect(
+            "비교할 연도를 골라보세요",
+            years,
+            default=years[: min(3, len(years))],
+            key="population_compare_years",
+        )
+
+        compare_df = pop_df[pop_df[year_col].isin(compare_years)].copy()
+        compare_df = compare_df.sort_values([year_col, "age_number"])
+
+        if not compare_df.empty:
+            render_plotly(
+                px.line(
+                    compare_df,
+                    x="age_number",
+                    y=population_col,
+                    color=year_col,
+                    markers=True,
+                    title="연도별 연령 인구 비교",
+                    labels={"age_number": "나이", population_col: "인구"},
+                ),
+                "연도별 비교 선그래프",
+            )
+
+            compare_bar = compare_df.copy()
+            compare_bar[year_col] = compare_bar[year_col].astype(str)
+            render_plotly(
+                px.bar(
+                    compare_bar,
+                    x="age_number",
+                    y=population_col,
+                    color=year_col,
+                    barmode="group",
+                    title="연도별 연령 인구 막대 비교",
+                    labels={"age_number": "나이", population_col: "인구"},
+                ),
+                "연도별 비교 막대그래프",
+            )
+    else:
+        pop_df = pop_df.sort_values("age_number")
+        render_plotly(
+            px.bar(
+                pop_df,
+                x="age_number",
+                y=population_col,
+                title="연령별 인구",
+                labels={"age_number": "나이", population_col: "인구"},
+            ),
+            "연령별 인구 막대그래프",
+        )
+
+        render_plotly(
+            px.line(
+                pop_df,
+                x="age_number",
+                y=population_col,
+                markers=True,
+                title="연령별 인구 선그래프",
+                labels={"age_number": "나이", population_col: "인구"},
+            ),
+            "연령별 인구 선그래프",
+        )
+
+
 def build_recommendations(df, numeric_cols, category_cols, datetime_cols, text_cols):
     recommendations = []
+
+    age_col, year_col, population_col = detect_population_columns(df, numeric_cols)
+    if age_col and population_col:
+        population_charts = ["연령별 막대그래프", "연령별 선그래프"]
+        if year_col:
+            population_charts.extend(["연도별 비교 선그래프", "연도별 비교 막대그래프"])
+
+        recommendations.append(
+            {
+                "title": "인구 데이터 비교하기",
+                "reason": "나이와 인구가 보여서 연령별 인구를 순서대로 보고, 연도가 있으면 해마다 비교하기 좋아요.",
+                "charts": population_charts,
+                "kind": "population",
+                "columns": {"age": age_col, "year": year_col, "population": population_col},
+            }
+        )
 
     if datetime_cols and numeric_cols:
         recommendations.append(
@@ -181,10 +376,41 @@ def render_matplotlib(fig, title):
     plt.close(fig)
 
 
-def render_recommendation_preview(df, recommendation):
+def render_recommendation_preview(df, recommendation, numeric_cols):
     kind = recommendation["kind"]
 
-    if kind == "time":
+    if kind == "population":
+        age_col = recommendation["columns"]["age"]
+        year_col = recommendation["columns"].get("year")
+        population_col = recommendation["columns"]["population"]
+        pop_df = prepare_population_dataframe(df, age_col, year_col, population_col)
+        if not pop_df.empty:
+            if year_col and year_col in pop_df.columns:
+                first_year = sorted(pop_df[year_col].unique().tolist())[0]
+                preview_df = pop_df[pop_df[year_col] == first_year].copy().sort_values("age_number")
+                render_plotly(
+                    px.line(
+                        preview_df,
+                        x="age_number",
+                        y=population_col,
+                        markers=True,
+                        title=f"추천 미리보기: {first_year}년 연령별 인구",
+                    ),
+                    "추천 그래프 미리보기",
+                )
+            else:
+                preview_df = pop_df.sort_values("age_number")
+                render_plotly(
+                    px.bar(
+                        preview_df,
+                        x="age_number",
+                        y=population_col,
+                        title="추천 미리보기: 연령별 인구",
+                    ),
+                    "추천 그래프 미리보기",
+                )
+
+    elif kind == "time":
         x = recommendation["columns"]["x"]
         y = recommendation["columns"]["y"]
         time_df = df[[x, y]].dropna().copy()
@@ -247,7 +473,7 @@ def render_auto_recommendations(df, numeric_cols, category_cols, datetime_cols, 
         st.subheader(f"{idx}. {recommendation['title']}")
         st.info(recommendation["reason"])
         st.write("추천 그래프:", ", ".join(recommendation["charts"]))
-        render_recommendation_preview(df, recommendation)
+        render_recommendation_preview(df, recommendation, numeric_cols)
         st.markdown("---")
 
 
@@ -397,8 +623,19 @@ def visualization_tab_advanced(df, category_cols, numeric_cols):
         render_plotly(px.strip(df.dropna(subset=[cat_col, value_col]), x=cat_col, y=value_col, color=cat_col), "스트립 플롯")
 
 
+def visualization_tab_population(df, numeric_cols):
+    st.header("7. 인구 데이터 보기")
+    age_col, year_col, population_col = detect_population_columns(df, numeric_cols)
+
+    if not age_col or not population_col:
+        st.info("나이와 인구 열이 보여야 인구 데이터를 특별하게 그릴 수 있어요.")
+        return
+
+    render_population_visualizations(df, numeric_cols)
+
+
 def visualization_tab_table(df, numeric_cols):
-    st.header("7. 숫자 요약 표")
+    st.header("8. 숫자 요약 표")
     st.dataframe(df.describe(include="all").fillna(""), use_container_width=True)
 
     if numeric_cols:
@@ -408,12 +645,12 @@ def visualization_tab_table(df, numeric_cols):
 
 
 def visualization_tab_quiz(df, category_cols, numeric_cols):
-    st.header("8. 퀴즈")
+    st.header("9. 퀴즈")
     if not category_cols or not numeric_cols:
         st.info("퀴즈를 만들려면 종류 열과 숫자 열이 필요해요.")
         return
 
-    cat = st.selectbox("퀴즈용 종��� 열", category_cols, key="quiz_cat")
+    cat = st.selectbox("퀴즈용 종류 열", category_cols, key="quiz_cat")
     num = st.selectbox("퀴즈용 숫자 열", numeric_cols, key="quiz_num")
     qdf = df[[cat, num]].dropna().groupby(cat, as_index=False)[num].sum().sort_values(num, ascending=False)
     if qdf.empty:
@@ -483,6 +720,7 @@ def main():
             "숫자 관계",
             "글자 보기",
             "특별 그래프",
+            "인구 데이터",
             "요약 표",
             "퀴즈",
         ]
@@ -501,8 +739,10 @@ def main():
     with tabs[5]:
         visualization_tab_advanced(df, category_cols, numeric_cols)
     with tabs[6]:
-        visualization_tab_table(df, numeric_cols)
+        visualization_tab_population(df, numeric_cols)
     with tabs[7]:
+        visualization_tab_table(df, numeric_cols)
+    with tabs[8]:
         visualization_tab_quiz(df, category_cols, numeric_cols)
 
 
