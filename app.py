@@ -33,6 +33,43 @@ PALETTE = [
 
 sns.set_theme(style="whitegrid")
 
+KOREA_REGION_COORDS = {
+    "서울": {"lat": 37.5665, "lon": 126.9780},
+    "서울특별시": {"lat": 37.5665, "lon": 126.9780},
+    "부산": {"lat": 35.1796, "lon": 129.0756},
+    "부산광역시": {"lat": 35.1796, "lon": 129.0756},
+    "대구": {"lat": 35.8722, "lon": 128.6025},
+    "대구광역시": {"lat": 35.8722, "lon": 128.6025},
+    "인천": {"lat": 37.4563, "lon": 126.7052},
+    "인천광역시": {"lat": 37.4563, "lon": 126.7052},
+    "광주": {"lat": 35.1595, "lon": 126.8526},
+    "광주광역시": {"lat": 35.1595, "lon": 126.8526},
+    "대전": {"lat": 36.3504, "lon": 127.3845},
+    "대전광역시": {"lat": 36.3504, "lon": 127.3845},
+    "울산": {"lat": 35.5384, "lon": 129.3114},
+    "울산광역시": {"lat": 35.5384, "lon": 129.3114},
+    "세종": {"lat": 36.4800, "lon": 127.2890},
+    "세종특별자치시": {"lat": 36.4800, "lon": 127.2890},
+    "경기": {"lat": 37.4138, "lon": 127.5183},
+    "경기도": {"lat": 37.4138, "lon": 127.5183},
+    "강원": {"lat": 37.8228, "lon": 128.1555},
+    "강원특별자치도": {"lat": 37.8228, "lon": 128.1555},
+    "충북": {"lat": 36.6357, "lon": 127.4917},
+    "충청북도": {"lat": 36.6357, "lon": 127.4917},
+    "충남": {"lat": 36.5184, "lon": 126.8000},
+    "충청남도": {"lat": 36.5184, "lon": 126.8000},
+    "전북": {"lat": 35.7175, "lon": 127.1530},
+    "전북특별자치도": {"lat": 35.7175, "lon": 127.1530},
+    "전남": {"lat": 34.8679, "lon": 126.9910},
+    "전라남도": {"lat": 34.8679, "lon": 126.9910},
+    "경북": {"lat": 36.4919, "lon": 128.8889},
+    "경상북도": {"lat": 36.4919, "lon": 128.8889},
+    "경남": {"lat": 35.4606, "lon": 128.2132},
+    "경상남도": {"lat": 35.4606, "lon": 128.2132},
+    "제주": {"lat": 33.4996, "lon": 126.5312},
+    "제주특별자치도": {"lat": 33.4996, "lon": 126.5312},
+}
+
 
 def load_data(uploaded_file):
     if uploaded_file.name.endswith(".csv"):
@@ -143,10 +180,59 @@ def detect_population_columns(df, numeric_cols=None):
     return age_col, year_col, population_col
 
 
-def prepare_population_dataframe(df, age_col, year_col, population_col):
+def detect_gender_column(df):
+    gender_keywords = ["성별", "gender", "sex"]
+    male_values = {"남", "남자", "male", "m", "man"}
+    female_values = {"여", "여자", "female", "f", "woman"}
+
+    for col in df.columns:
+        normalized = normalize_column_name(col)
+        if any(keyword in normalized for keyword in gender_keywords):
+            return col
+
+    for col in df.columns:
+        values = set(df[col].dropna().astype(str).str.strip().str.lower().unique().tolist())
+        if values and values.intersection(male_values) and values.intersection(female_values):
+            return col
+
+    return None
+
+
+def detect_region_column(df):
+    region_keywords = ["지역", "시도", "시군구", "province", "region", "city", "area"]
+    for col in df.columns:
+        normalized = normalize_column_name(col)
+        if any(keyword in normalized for keyword in region_keywords):
+            return col
+    return None
+
+
+def standardize_gender(value):
+    if pd.isna(value):
+        return None
+    text = str(value).strip().lower()
+    if text in {"남", "남자", "male", "m", "man"}:
+        return "남자"
+    if text in {"여", "여자", "female", "f", "woman"}:
+        return "여자"
+    return None
+
+
+def add_region_coordinates(df, region_col):
+    map_df = df.copy()
+    map_df["lat"] = map_df[region_col].map(lambda x: KOREA_REGION_COORDS.get(str(x).strip(), {}).get("lat"))
+    map_df["lon"] = map_df[region_col].map(lambda x: KOREA_REGION_COORDS.get(str(x).strip(), {}).get("lon"))
+    return map_df.dropna(subset=["lat", "lon"])
+
+
+def prepare_population_dataframe(df, age_col, year_col, population_col, gender_col=None, region_col=None):
     selected_cols = [age_col, population_col]
     if year_col:
         selected_cols.append(year_col)
+    if gender_col:
+        selected_cols.append(gender_col)
+    if region_col:
+        selected_cols.append(region_col)
 
     pop_df = df[selected_cols].dropna().copy()
     if pop_df.empty:
@@ -165,26 +251,136 @@ def prepare_population_dataframe(df, age_col, year_col, population_col):
 
     if year_col:
         pop_df[year_col] = pop_df[year_col].astype(str)
-        pop_df = pop_df.sort_values([year_col, "age_number"])
-    else:
-        pop_df = pop_df.sort_values(["age_number"])
+    if gender_col:
+        pop_df[gender_col] = pop_df[gender_col].apply(standardize_gender)
+    if region_col:
+        pop_df[region_col] = pop_df[region_col].astype(str).str.strip()
 
+    sort_cols = ["age_number"]
+    if year_col:
+        sort_cols = [year_col] + sort_cols
+    if region_col:
+        sort_cols = [region_col] + sort_cols
+
+    pop_df = pop_df.sort_values(sort_cols)
     pop_df[age_col] = pop_df[age_col].astype(str)
     return pop_df
 
 
+def render_population_pyramid(pop_df, age_col, population_col, gender_col, year_col=None, region_col=None):
+    if gender_col not in pop_df.columns:
+        st.info("성별 열이 있어야 인구 피라미드를 그릴 수 있어요.")
+        return
+
+    pyramid_df = pop_df.dropna(subset=[gender_col]).copy()
+    pyramid_df = pyramid_df[pyramid_df[gender_col].isin(["남자", "여자"])]
+    if pyramid_df.empty:
+        st.info("남자/여자 값이 보여야 인구 피라미드를 그릴 수 있어요.")
+        return
+
+    if year_col and year_col in pyramid_df.columns:
+        years = sorted(pyramid_df[year_col].unique().tolist())
+        selected_year = st.selectbox("피라미드 연도", years, key="pyramid_year")
+        pyramid_df = pyramid_df[pyramid_df[year_col] == selected_year].copy()
+
+    if region_col and region_col in pyramid_df.columns:
+        regions = sorted(pyramid_df[region_col].unique().tolist())
+        selected_region = st.selectbox("피라미드 지역", regions, key="pyramid_region")
+        pyramid_df = pyramid_df[pyramid_df[region_col] == selected_region].copy()
+
+    grouped = (
+        pyramid_df.groupby(["age_number", gender_col], as_index=False)[population_col]
+        .sum()
+        .sort_values("age_number")
+    )
+    if grouped.empty:
+        st.info("인구 피라미드를 만들 데이터가 없어요.")
+        return
+
+    male_df = grouped[grouped[gender_col] == "남자"].copy()
+    female_df = grouped[grouped[gender_col] == "여자"].copy()
+    male_df[population_col] = -male_df[population_col]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=male_df["age_number"],
+            x=male_df[population_col],
+            name="남자",
+            orientation="h",
+            marker_color="#4E79A7",
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            y=female_df["age_number"],
+            x=female_df[population_col],
+            name="여자",
+            orientation="h",
+            marker_color="#F28EAE",
+        )
+    )
+    fig.update_layout(
+        title="인구 피라미드",
+        barmode="relative",
+        xaxis_title="인구 수",
+        yaxis_title="나이",
+        font=dict(size=16),
+        colorway=PALETTE,
+    )
+    st.subheader("인구 피라미드")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_region_map(pop_df, population_col, region_col, year_col=None):
+    if region_col not in pop_df.columns:
+        st.info("지역 열이 있어야 지도 비교를 할 수 있어요.")
+        return
+
+    map_df = pop_df.copy()
+    if year_col and year_col in map_df.columns:
+        years = sorted(map_df[year_col].unique().tolist())
+        selected_year = st.selectbox("지도 연도", years, key="map_year")
+        map_df = map_df[map_df[year_col] == selected_year].copy()
+
+    grouped = map_df.groupby(region_col, as_index=False)[population_col].sum()
+    grouped = add_region_coordinates(grouped, region_col)
+    if grouped.empty:
+        st.info("현재는 대한민국 시도 이름이 있을 때 지도 비교를 보여줄 수 있어요.")
+        return
+
+    fig = px.scatter_mapbox(
+        grouped,
+        lat="lat",
+        lon="lon",
+        size=population_col,
+        color=population_col,
+        hover_name=region_col,
+        hover_data={population_col: True, "lat": False, "lon": False},
+        zoom=5.5,
+        height=600,
+        color_continuous_scale="Viridis",
+        size_max=50,
+        title="지역별 인구 지도 비교",
+    )
+    fig.update_layout(mapbox_style="carto-positron")
+    render_plotly(fig, "지역별 지도 비교")
+
+
 def render_population_visualizations(df, numeric_cols):
     age_col, year_col, population_col = detect_population_columns(df, numeric_cols)
+    gender_col = detect_gender_column(df)
+    region_col = detect_region_column(df)
 
     if not age_col or not population_col:
         return
 
-    pop_df = prepare_population_dataframe(df, age_col, year_col, population_col)
+    pop_df = prepare_population_dataframe(df, age_col, year_col, population_col, gender_col, region_col)
     if pop_df.empty:
         return
 
     st.header("👨‍👩‍👧 인구 데이터 분석")
-    st.write("인구 데이터로 보이는 표를 찾아서 나이순으로 정리하고, 연도별 비교도 해줘요.")
+    st.write("인구 데이터로 보이는 표를 찾아서 나이순으로 정리하고, 연도별 비교와 지역 비교도 해줘요.")
 
     age_min = int(pop_df["age_number"].min())
     age_max = int(pop_df["age_number"].max())
@@ -197,13 +393,11 @@ def render_population_visualizations(df, numeric_cols):
         years = sorted(pop_df[year_col].dropna().unique().tolist())
         selected_year = st.selectbox("보고 싶은 연도를 고르세요", years, key="population_year")
 
-        year_df = pop_df[pop_df[year_col] == selected_year].copy()
-        year_df = year_df.sort_values("age_number")
-
+        year_df = pop_df[pop_df[year_col] == selected_year].copy().sort_values("age_number")
         if not year_df.empty:
             render_plotly(
                 px.bar(
-                    year_df,
+                    year_df.groupby("age_number", as_index=False)[population_col].sum(),
                     x="age_number",
                     y=population_col,
                     title=f"{selected_year}년 연령별 인구",
@@ -220,6 +414,7 @@ def render_population_visualizations(df, numeric_cols):
         )
 
         compare_df = pop_df[pop_df[year_col].isin(compare_years)].copy()
+        compare_df = compare_df.groupby([year_col, "age_number"], as_index=False)[population_col].sum()
         compare_df = compare_df.sort_values([year_col, "age_number"])
 
         if not compare_df.empty:
@@ -236,11 +431,9 @@ def render_population_visualizations(df, numeric_cols):
                 "연도별 비교 선그래프",
             )
 
-            compare_bar = compare_df.copy()
-            compare_bar[year_col] = compare_bar[year_col].astype(str)
             render_plotly(
                 px.bar(
-                    compare_bar,
+                    compare_df,
                     x="age_number",
                     y=population_col,
                     color=year_col,
@@ -251,10 +444,10 @@ def render_population_visualizations(df, numeric_cols):
                 "연도별 비교 막대그래프",
             )
     else:
-        pop_df = pop_df.sort_values("age_number")
+        age_df = pop_df.groupby("age_number", as_index=False)[population_col].sum().sort_values("age_number")
         render_plotly(
             px.bar(
-                pop_df,
+                age_df,
                 x="age_number",
                 y=population_col,
                 title="연령별 인구",
@@ -265,7 +458,7 @@ def render_population_visualizations(df, numeric_cols):
 
         render_plotly(
             px.line(
-                pop_df,
+                age_df,
                 x="age_number",
                 y=population_col,
                 markers=True,
@@ -275,23 +468,39 @@ def render_population_visualizations(df, numeric_cols):
             "연령별 인구 선그래프",
         )
 
+    render_population_pyramid(pop_df, age_col, population_col, gender_col, year_col, region_col)
+    render_region_map(pop_df, population_col, region_col, year_col)
+
 
 def build_recommendations(df, numeric_cols, category_cols, datetime_cols, text_cols):
     recommendations = []
 
     age_col, year_col, population_col = detect_population_columns(df, numeric_cols)
+    gender_col = detect_gender_column(df)
+    region_col = detect_region_column(df)
+
     if age_col and population_col:
         population_charts = ["연령별 막대그래프", "연령별 선그래프"]
         if year_col:
             population_charts.extend(["연도별 비교 선그래프", "연도별 비교 막대그래프"])
+        if gender_col:
+            population_charts.append("인구 피라미드")
+        if region_col:
+            population_charts.append("지역별 지도 비교")
 
         recommendations.append(
             {
                 "title": "인구 데이터 비교하기",
-                "reason": "나이와 인구가 보여서 연령별 인구를 순서대로 보고, 연도가 있으면 해마다 비교하기 좋아요.",
+                "reason": "나이와 인구가 보여서 연령별 인구를 순서대로 보고, 연도·성별·지역이 있으면 더 자세히 비교하기 좋아요.",
                 "charts": population_charts,
                 "kind": "population",
-                "columns": {"age": age_col, "year": year_col, "population": population_col},
+                "columns": {
+                    "age": age_col,
+                    "year": year_col,
+                    "population": population_col,
+                    "gender": gender_col,
+                    "region": region_col,
+                },
             }
         )
 
@@ -383,11 +592,18 @@ def render_recommendation_preview(df, recommendation, numeric_cols):
         age_col = recommendation["columns"]["age"]
         year_col = recommendation["columns"].get("year")
         population_col = recommendation["columns"]["population"]
-        pop_df = prepare_population_dataframe(df, age_col, year_col, population_col)
+        gender_col = recommendation["columns"].get("gender")
+        region_col = recommendation["columns"].get("region")
+        pop_df = prepare_population_dataframe(df, age_col, year_col, population_col, gender_col, region_col)
         if not pop_df.empty:
             if year_col and year_col in pop_df.columns:
                 first_year = sorted(pop_df[year_col].unique().tolist())[0]
-                preview_df = pop_df[pop_df[year_col] == first_year].copy().sort_values("age_number")
+                preview_df = (
+                    pop_df[pop_df[year_col] == first_year]
+                    .groupby("age_number", as_index=False)[population_col]
+                    .sum()
+                    .sort_values("age_number")
+                )
                 render_plotly(
                     px.line(
                         preview_df,
@@ -399,7 +615,7 @@ def render_recommendation_preview(df, recommendation, numeric_cols):
                     "추천 그래프 미리보기",
                 )
             else:
-                preview_df = pop_df.sort_values("age_number")
+                preview_df = pop_df.groupby("age_number", as_index=False)[population_col].sum().sort_values("age_number")
                 render_plotly(
                     px.bar(
                         preview_df,
