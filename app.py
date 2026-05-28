@@ -89,11 +89,84 @@ def simple_fact(df, category_col, value_col):
     )
 
 
-def to_two_cols(items):
-    left, right = st.columns(2)
-    for idx, item in enumerate(items):
-        with left if idx % 2 == 0 else right:
-            item()
+def is_long_text_series(series, threshold=12):
+    cleaned = series.dropna().astype(str)
+    if cleaned.empty:
+        return False
+    avg_len = cleaned.map(len).mean()
+    return avg_len >= threshold
+
+
+def build_recommendations(df, numeric_cols, category_cols, datetime_cols, text_cols):
+    recommendations = []
+
+    if datetime_cols and numeric_cols:
+        recommendations.append(
+            {
+                "title": "시간의 흐름 보기",
+                "reason": "날짜와 숫자가 함께 있어서 시간이 지나며 어떻게 바뀌는지 보기 좋아요.",
+                "charts": ["선그래프", "영역그래프", "버블 산점도"],
+                "kind": "time",
+                "columns": {"x": datetime_cols[0], "y": numeric_cols[0]},
+            }
+        )
+
+    if category_cols and numeric_cols:
+        recommendations.append(
+            {
+                "title": "무엇이 가장 큰지 비교하기",
+                "reason": "이름이나 종류와 숫자가 함께 있어서 서로 크기를 비교하기 좋아요.",
+                "charts": ["막대그래프", "원그래프", "트리맵", "깔때기 그래프"],
+                "kind": "category_value",
+                "columns": {"category": category_cols[0], "value": numeric_cols[0]},
+            }
+        )
+
+    if numeric_cols:
+        recommendations.append(
+            {
+                "title": "숫자가 어떻게 퍼져 있는지 보기",
+                "reason": "숫자 열이 있어서 값이 어디에 많이 모여 있는지 살펴볼 수 있어요.",
+                "charts": ["히스토그램", "박스플롯", "바이올린 플롯", "밀도 그래프"],
+                "kind": "distribution",
+                "columns": {"value": numeric_cols[0]},
+            }
+        )
+
+    if len(numeric_cols) >= 2:
+        recommendations.append(
+            {
+                "title": "숫자끼리 어떤 관계인지 보기",
+                "reason": "숫자 열이 2개 이상 있어서 함께 커지는지 비교할 수 있어요.",
+                "charts": ["산점도", "밀도 윤곽 그래프", "상관관계 히트맵"],
+                "kind": "relationship",
+                "columns": {"x": numeric_cols[0], "y": numeric_cols[1]},
+            }
+        )
+
+    long_text_candidates = [col for col in text_cols if is_long_text_series(df[col])]
+    if long_text_candidates:
+        recommendations.append(
+            {
+                "title": "글자에서 자주 나오는 말 보기",
+                "reason": "긴 글자 데이터가 있어서 어떤 말이 많이 나오는지 볼 수 있어요.",
+                "charts": ["워드클라우드", "빈도 막대그래프"],
+                "kind": "text",
+                "columns": {"text": long_text_candidates[0]},
+            }
+        )
+    elif text_cols:
+        recommendations.append(
+            {
+                "title": "글자 종류 세어 보기",
+                "reason": "글자 열이 있어서 어떤 항목이 많이 나오는지 셀 수 있어요.",
+                "charts": ["빈도 막대그래프"],
+                "kind": "text",
+                "columns": {"text": text_cols[0]},
+            }
+        )
+
+    return recommendations
 
 
 def render_plotly(fig, title):
@@ -106,6 +179,76 @@ def render_matplotlib(fig, title):
     st.subheader(title)
     st.pyplot(fig)
     plt.close(fig)
+
+
+def render_recommendation_preview(df, recommendation):
+    kind = recommendation["kind"]
+
+    if kind == "time":
+        x = recommendation["columns"]["x"]
+        y = recommendation["columns"]["y"]
+        time_df = df[[x, y]].dropna().copy()
+        time_df[x] = pd.to_datetime(time_df[x], errors="coerce")
+        time_df = time_df.dropna().sort_values(x)
+        if not time_df.empty:
+            render_plotly(px.line(time_df, x=x, y=y, markers=True), "추천 그래프 미리보기")
+
+    elif kind == "category_value":
+        category = recommendation["columns"]["category"]
+        value = recommendation["columns"]["value"]
+        chart_df = df[[category, value]].dropna().copy()
+        chart_df = chart_df.groupby(category, as_index=False)[value].sum().sort_values(value, ascending=False)
+        if not chart_df.empty:
+            st.success(simple_fact(chart_df, category, value))
+            render_plotly(px.bar(chart_df, x=category, y=value, color=category, text=value), "추천 그래프 미리보기")
+
+    elif kind == "distribution":
+        value = recommendation["columns"]["value"]
+        dist_df = df[[value]].dropna().copy()
+        if not dist_df.empty:
+            render_plotly(px.histogram(dist_df, x=value, nbins=20), "추천 그래프 미리보기")
+
+    elif kind == "relationship":
+        x = recommendation["columns"]["x"]
+        y = recommendation["columns"]["y"]
+        rel_df = df[[x, y]].dropna().copy()
+        if not rel_df.empty:
+            corr = rel_df[x].corr(rel_df[y])
+            st.success(f"'{x}'와 '{y}'의 상관 정도는 {corr:.2f}예요.")
+            render_plotly(px.scatter(rel_df, x=x, y=y, trendline="ols"), "추천 그래프 미리보기")
+
+    elif kind == "text":
+        text_col = recommendation["columns"]["text"]
+        series = df[text_col].dropna().astype(str)
+        if not series.empty:
+            counts = series.value_counts().head(15).reset_index()
+            counts.columns = [text_col, "count"]
+            render_plotly(px.bar(counts, x=text_col, y="count", color=text_col, text="count"), "추천 그래프 미리보기")
+            if is_long_text_series(series):
+                long_text = " ".join(series.tolist())
+                wc = WordCloud(width=900, height=400, background_color="white", colormap="Set2").generate(long_text)
+                fig, ax = plt.subplots(figsize=(12, 5))
+                ax.imshow(wc, interpolation="bilinear")
+                ax.axis("off")
+                ax.set_title("추천 워드클라우드")
+                render_matplotlib(fig, "추천 워드클라우드")
+
+
+def render_auto_recommendations(df, numeric_cols, category_cols, datetime_cols, text_cols):
+    st.header("⭐ 자동 추천 그래프")
+    st.write("데이터를 읽고, 어떤 그래프가 잘 어울리는지 먼저 골라봤어요.")
+
+    recommendations = build_recommendations(df, numeric_cols, category_cols, datetime_cols, text_cols)
+    if not recommendations:
+        st.info("아직 추천할 수 있는 그래프를 찾지 못했어요.")
+        return
+
+    for idx, recommendation in enumerate(recommendations, start=1):
+        st.subheader(f"{idx}. {recommendation['title']}")
+        st.info(recommendation["reason"])
+        st.write("추천 그래프:", ", ".join(recommendation["charts"]))
+        render_recommendation_preview(df, recommendation)
+        st.markdown("---")
 
 
 def add_download_button(df, filename):
@@ -270,7 +413,7 @@ def visualization_tab_quiz(df, category_cols, numeric_cols):
         st.info("퀴즈를 만들려면 종류 열과 숫자 열이 필요해요.")
         return
 
-    cat = st.selectbox("퀴즈용 종류 열", category_cols, key="quiz_cat")
+    cat = st.selectbox("퀴즈용 종��� 열", category_cols, key="quiz_cat")
     num = st.selectbox("퀴즈용 숫자 열", numeric_cols, key="quiz_num")
     qdf = df[[cat, num]].dropna().groupby(cat, as_index=False)[num].sum().sort_values(num, ascending=False)
     if qdf.empty:
@@ -329,6 +472,8 @@ def main():
     c2.metric("종류 열", len(category_cols))
     c3.metric("날짜 열", len(datetime_cols))
     c4.metric("글자 열", len(text_cols))
+
+    render_auto_recommendations(df, numeric_cols, category_cols, datetime_cols, text_cols)
 
     tabs = st.tabs(
         [
